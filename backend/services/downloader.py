@@ -17,7 +17,6 @@ _BASE_FLAGS = [
     "--extractor-retries", "3",
     "--fragment-retries", "3",
     "--retry-sleep", "3",
-    "--extractor-args", "youtube:player_client=ios,web",
 ]
 
 
