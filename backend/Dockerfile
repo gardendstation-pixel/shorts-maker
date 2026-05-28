@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libgomp1 \
     git \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
