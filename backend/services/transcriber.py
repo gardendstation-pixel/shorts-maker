@@ -14,10 +14,10 @@ async def transcribe(video_path: Path) -> list[dict]:
 def _run_whisper(video_path: Path) -> list[dict]:
     from faster_whisper import WhisperModel
 
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    model = WhisperModel("tiny", device="cpu", compute_type="int8")
     segments_iter, info = model.transcribe(
         str(video_path),
-        beam_size=5,
+        beam_size=1,
         vad_filter=True,          # 무음 구간 자동 제거
         vad_parameters={"min_silence_duration_ms": 300},
     )
