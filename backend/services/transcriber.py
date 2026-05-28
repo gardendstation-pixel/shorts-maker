@@ -39,10 +39,6 @@ def _extract_audio(video_path: Path, out: Path) -> None:
         raise RuntimeError(result.stderr.decode()[-300:])
 
 
-def _get(seg, key):
-    return seg[key] if isinstance(seg, dict) else getattr(seg, key)
-
-
 def _transcribe_file(audio_path: Path, offset: float = 0.0) -> list[dict]:
     with open(audio_path, "rb") as f:
         resp = _client.audio.transcriptions.create(
@@ -51,13 +47,27 @@ def _transcribe_file(audio_path: Path, offset: float = 0.0) -> list[dict]:
             response_format="verbose_json",
             timestamp_granularities=["segment"],
         )
+
+    # resp가 dict일 수도, 객체일 수도 있음
+    if isinstance(resp, dict):
+        raw_segs = resp.get("segments") or []
+    else:
+        raw_segs = getattr(resp, "segments", None) or []
+
     results = []
-    for seg in resp.segments or []:
-        text = (_get(seg, "text") or "").strip()
+    for seg in raw_segs:
+        if isinstance(seg, dict):
+            text = (seg.get("text") or "").strip()
+            start = float(seg.get("start") or 0)
+            end = float(seg.get("end") or 0)
+        else:
+            text = (getattr(seg, "text", "") or "").strip()
+            start = float(getattr(seg, "start", 0) or 0)
+            end = float(getattr(seg, "end", 0) or 0)
         if text:
             results.append({
-                "start": round(_get(seg, "start") + offset, 2),
-                "end": round(_get(seg, "end") + offset, 2),
+                "start": round(start + offset, 2),
+                "end": round(end + offset, 2),
                 "text": text,
             })
     return results

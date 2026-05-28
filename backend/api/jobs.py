@@ -211,7 +211,10 @@ async def generate_job(job_id: str, chosen_topic: dict):
     try:
         job = await get_job(job_id)
         transcript_segs = json.loads(job["transcript"] or "[]")
-        video_path = Path(job["video_path"])
+        raw_path = job.get("video_path") or ""
+        if not raw_path:
+            raise FileNotFoundError("원본 영상 파일이 없습니다. 처음부터 다시 시도해주세요.")
+        video_path = Path(raw_path)
         video_title = job.get("video_title") or ""
 
         if not video_path.exists():
