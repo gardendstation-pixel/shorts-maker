@@ -39,6 +39,10 @@ def _extract_audio(video_path: Path, out: Path) -> None:
         raise RuntimeError(result.stderr.decode()[-300:])
 
 
+def _get(seg, key):
+    return seg[key] if isinstance(seg, dict) else getattr(seg, key)
+
+
 def _transcribe_file(audio_path: Path, offset: float = 0.0) -> list[dict]:
     with open(audio_path, "rb") as f:
         resp = _client.audio.transcriptions.create(
@@ -49,11 +53,11 @@ def _transcribe_file(audio_path: Path, offset: float = 0.0) -> list[dict]:
         )
     results = []
     for seg in resp.segments or []:
-        text = seg.text.strip()
+        text = (_get(seg, "text") or "").strip()
         if text:
             results.append({
-                "start": round(seg.start + offset, 2),
-                "end": round(seg.end + offset, 2),
+                "start": round(_get(seg, "start") + offset, 2),
+                "end": round(_get(seg, "end") + offset, 2),
                 "text": text,
             })
     return results
