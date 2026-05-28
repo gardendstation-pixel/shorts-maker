@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+.env
+shorts_maker.db
+uploads/
+outputs/
+.git
