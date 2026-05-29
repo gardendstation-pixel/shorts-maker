@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   createJob, generateShorts, generateCustomShorts, generateShortsFromSegments,
-  subdivideTopic, getVideoUrl,
+  subdivideTopic, getPreviewClipUrl,
   getJobStatus, getDownloadUrl, formatSeconds,
   type JobStatus, type TopicSuggestion, type SubTopic,
 } from "@/lib/api";
@@ -39,6 +39,8 @@ export default function Home() {
 
   type PreviewInfo = { title: string; ranges: Array<{ start: number; end: number }> };
   const [preview, setPreview] = useState<PreviewInfo | null>(null);
+  const [videoSrc, setVideoSrc] = useState<string>("");
+  const [videoLoading, setVideoLoading] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const previewRangeRef = useRef(0);
 
@@ -58,12 +60,39 @@ export default function Home() {
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   useEffect(() => {
-    if (preview && videoRef.current) {
+    if (!preview || !job) { setVideoSrc(""); setVideoLoading(false); return; }
+    const controller = new AbortController();
+    let blobUrl = "";
+    setVideoSrc("");
+    setVideoLoading(true);
+    fetch(getPreviewClipUrl(job.job_id, preview.ranges), {
+      headers: { "ngrok-skip-browser-warning": "1" },
+      signal: controller.signal,
+    })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
+      .then(blob => {
+        blobUrl = URL.createObjectURL(blob);
+        setVideoSrc(blobUrl);
+        setVideoLoading(false);
+      })
+      .catch(err => {
+        if (err.name === "AbortError") return;
+        setVideoLoading(false);
+      });
+    return () => {
+      controller.abort();
+      setVideoLoading(false);
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [preview, job]);
+
+  useEffect(() => {
+    if (videoSrc && videoRef.current) {
       previewRangeRef.current = 0;
-      videoRef.current.currentTime = preview.ranges[0].start;
+      videoRef.current.currentTime = preview?.ranges[0].start ?? 0;
       videoRef.current.play().catch(() => {});
     }
-  }, [preview]);
+  }, [videoSrc]);
 
   const startPolling = useCallback((jobId: string, onTerminal: (s: JobStatus) => void) => {
     stopPolling();
@@ -226,11 +255,17 @@ export default function Home() {
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all shrink-0 text-base"
               >✕</button>
             </div>
+            {videoLoading && (
+              <div className="w-full bg-slate-900 flex flex-col items-center justify-center gap-2 py-12">
+                <div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" />
+                <p className="text-xs text-slate-400">영상 불러오는 중...</p>
+              </div>
+            )}
             <video
               ref={videoRef}
-              src={getVideoUrl(job.job_id)}
+              src={videoSrc}
               controls
-              className="w-full bg-slate-900"
+              className={`w-full bg-slate-900 ${videoLoading ? "hidden" : ""}`}
               onLoadedMetadata={() => {
                 if (videoRef.current) {
                   previewRangeRef.current = 0;
