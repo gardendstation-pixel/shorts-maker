@@ -39,6 +39,7 @@ export default function Home() {
 
   type PreviewInfo = { title: string; ranges: Array<{ start: number; end: number }> };
   const [preview, setPreview] = useState<PreviewInfo | null>(null);
+  const [videoError, setVideoError] = useState("");
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const previewRangeRef = useRef(0);
 
@@ -137,6 +138,7 @@ export default function Home() {
     }
     if (!ranges || ranges.length === 0) return;
     previewRangeRef.current = 0;
+    setVideoError("");
     setPreview({ title: topic.title, ranges });
   };
 
@@ -219,19 +221,33 @@ export default function Home() {
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all shrink-0 text-base"
               >✕</button>
             </div>
-            <video
-              ref={videoRef}
-              src={job ? getPreviewClipUrl(job.job_id, preview.ranges) : ""}
-              controls
-              className="w-full bg-slate-900"
-              onLoadedMetadata={() => {
-                if (videoRef.current) {
-                  previewRangeRef.current = 0;
-                  videoRef.current.currentTime = 0;
-                  videoRef.current.play().catch(() => {});
-                }
-              }}
-            />
+            {videoError ? (
+              <div className="w-full bg-slate-900 flex flex-col items-center justify-center py-10 gap-2">
+                <p className="text-xs text-red-400">영상 로드 실패</p>
+                <p className="text-[10px] text-slate-500 px-4 text-center break-all">{videoError}</p>
+              </div>
+            ) : (
+              <video
+                ref={videoRef}
+                src={job ? getPreviewClipUrl(job.job_id, preview.ranges) : ""}
+                controls
+                playsInline
+                className="w-full bg-slate-900"
+                onLoadedMetadata={() => {
+                  setVideoError("");
+                  if (videoRef.current) {
+                    previewRangeRef.current = 0;
+                    videoRef.current.currentTime = 0;
+                    videoRef.current.play().catch(() => {});
+                  }
+                }}
+                onError={e => {
+                  const v = e.currentTarget;
+                  const err = v.error;
+                  setVideoError(err ? `MediaError ${err.code}: ${err.message || "알 수 없는 오류"}` : "영상을 불러올 수 없습니다");
+                }}
+              />
+            )}
             <div className="px-5 py-3 flex items-center gap-2 bg-slate-50">
               <span className="text-xs text-slate-500">
                 {preview.ranges.length > 1
