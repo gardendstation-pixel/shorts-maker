@@ -11,14 +11,24 @@ _FORMAT_FALLBACKS = [
     "bestaudio/best",  # 영상 없이 오디오만이라도
 ]
 
+_COOKIES_PATH = "/tmp/youtube_cookies.txt"
+
 _BASE_FLAGS = [
     "--no-playlist",
     "--no-check-certificates",
     "--extractor-retries", "3",
     "--fragment-retries", "3",
     "--retry-sleep", "3",
-    "--extractor-args", "youtube:player_client=tv_embedded,android",
+    "--remote-components", "ejs:github",
 ]
+
+
+def _build_flags() -> list[str]:
+    import os
+    flags = list(_BASE_FLAGS)
+    if os.path.exists(_COOKIES_PATH):
+        flags += ["--cookies", _COOKIES_PATH]
+    return flags
 
 
 async def download_video(job_id: str, url: str) -> Path:
@@ -26,10 +36,11 @@ async def download_video(job_id: str, url: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     last_error = ""
+    base_flags = _build_flags()
     for fmt in _FORMAT_FALLBACKS:
         cmd = [
             "yt-dlp",
-            *_BASE_FLAGS,
+            *base_flags,
             "-f", fmt,
             "--merge-output-format", "mp4",
             "-o", str(out_dir / "video.%(ext)s"),

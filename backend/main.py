@@ -7,8 +7,20 @@ from models.database import init_db
 from api.jobs import router as jobs_router
 
 
+def _init_youtube_cookies():
+    import base64
+    cookies_b64 = os.getenv("YOUTUBE_COOKIES", "")
+    if cookies_b64:
+        try:
+            with open("/tmp/youtube_cookies.txt", "wb") as f:
+                f.write(base64.b64decode(cookies_b64))
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _init_youtube_cookies()
     await init_db()
     yield
 
