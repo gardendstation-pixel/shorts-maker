@@ -109,7 +109,7 @@ export function getVideoUrl(jobId: string): string {
 
 export function getPreviewClipUrl(jobId: string, ranges: Array<{ start: number; end: number }>): string {
   const r = ranges.map(({ start, end }) => `${start}:${end}`).join(",");
-  return `${BASE_URL}/api/jobs/${jobId}/preview-clip?r=${encodeURIComponent(r)}`;
+  return `/api/video-proxy/${jobId}?r=${encodeURIComponent(r)}`;
 }
 
 export function formatSeconds(s: number): string {
