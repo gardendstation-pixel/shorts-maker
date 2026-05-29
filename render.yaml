@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: shorts-maker-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    region: singapore
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://frontend-sand-alpha-43.vercel.app
+      - key: YOUTUBE_COOKIES
+        sync: false

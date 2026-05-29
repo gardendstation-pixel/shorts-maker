@@ -10,7 +10,7 @@ from models.database import create_job, get_job, update_job
 from services.downloader import download_video, get_video_info
 from services.transcriber import transcribe
 from services.analyzer import analyze_video, extract_segments_for_topic, subdivide_topic
-from services.editor import cut_and_merge
+from services.editor import cut_and_merge, cut_preview_clip
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -144,6 +144,42 @@ async def stream_video(job_id: str):
     import mimetypes
     media_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
     return FileResponse(str(video_path), media_type=media_type)
+
+
+@router.get("/{job_id}/preview-clip")
+async def preview_clip_endpoint(job_id: str, r: str = ""):
+    """Quick preview clip for specific ranges (stream copy, no re-encoding)."""
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    video_path = Path(job.get("video_path") or "")
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="영상 파일이 없습니다.")
+
+    if not r:
+        return FileResponse(str(video_path), media_type="video/mp4")
+
+    ranges: list[tuple[float, float]] = []
+    for part in r.split(","):
+        try:
+            s, e = part.split(":")
+            ranges.append((float(s), float(e)))
+        except Exception:
+            pass
+
+    if not ranges:
+        return FileResponse(str(video_path), media_type="video/mp4")
+
+    ranges_key = r.replace(":", "_").replace(",", "-").replace(".", "")[:40]
+    out_path = video_path.parent / f"preview_{ranges_key}.mp4"
+
+    if not out_path.exists():
+        try:
+            await cut_preview_clip(video_path, ranges, out_path)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"미리보기 생성 실패: {str(e)[:200]}")
+
+    return FileResponse(str(out_path), media_type="video/mp4")
 
 
 @router.get("/{job_id}/download")

@@ -98,6 +98,66 @@ async def _to_shorts_format(in_path: Path, out: Path):
     ])
 
 
+async def cut_preview_clip(video_path: Path, ranges: list[tuple[float, float]], out_path: Path) -> Path:
+    """Preview clip transcoded to H.264+AAC for broad browser compatibility."""
+    if not ranges:
+        raise ValueError("No ranges specified")
+
+    _ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+
+    if len(ranges) == 1:
+        start, end = ranges[0]
+        await _run([
+            "ffmpeg", "-y",
+            "-ss", str(max(0, start - 0.5)),
+            "-to", str(end + 0.5),
+            "-i", str(video_path),
+            *_ENCODE,
+            str(out_path),
+        ])
+        return out_path
+
+    tmp_dir = out_path.parent
+    clip_paths = []
+    for i, (start, end) in enumerate(ranges):
+        clip_path = tmp_dir / f"_prev_{i}_{out_path.name}"
+        await _run([
+            "ffmpeg", "-y",
+            "-ss", str(max(0, start - 0.5)),
+            "-to", str(end + 0.5),
+            "-i", str(video_path),
+            *_ENCODE,
+            str(clip_path),
+        ])
+        if clip_path.exists() and clip_path.stat().st_size > 0:
+            clip_paths.append(clip_path)
+
+    if not clip_paths:
+        raise RuntimeError("Failed to cut any preview clips")
+
+    if len(clip_paths) == 1:
+        clip_paths[0].rename(out_path)
+        return out_path
+
+    concat_txt = tmp_dir / f"_prev_concat_{out_path.stem}.txt"
+    concat_txt.write_text("\n".join(f"file '{p.resolve()}'" for p in clip_paths))
+    try:
+        await _run([
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", str(concat_txt),
+            "-c", "copy",
+            str(out_path),
+        ])
+    finally:
+        concat_txt.unlink(missing_ok=True)
+        for p in clip_paths:
+            p.unlink(missing_ok=True)
+
+    return out_path
+
+
 async def _run(cmd: list[str]):
     proc = await asyncio.create_subprocess_exec(
         *cmd,
