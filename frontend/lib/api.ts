@@ -10,6 +10,7 @@ export interface TopicSuggestion {
   description: string;
   ranges: Array<{ start: number; end: number }>;
   duration_sec: number;
+  skip?: boolean;
   recommended?: boolean;
   recommend_reason?: string;
 }

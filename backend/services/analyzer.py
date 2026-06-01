@@ -115,10 +115,9 @@ async def analyze_video(
 작업 지시:
 - 영상 전체를 처음부터 끝까지 순서대로 훑으며 화제가 바뀌는 지점마다 새 주제로 구분
 - **모든 구간이 반드시 어딘가 topics에 포함되어야 함** (빠지는 구간 없을 것)
-- 주제의 좋고 나쁨을 판단하지 말 것 — 무조건 전부 나열
-- 짧은 잡담, 인사, 마무리도 별도 주제로 포함
 - 한 주제 안에서 잠깐 다른 얘기 후 돌아오면 ranges에 두 구간 모두 나열
-- recommended: 쇼츠로 만들면 특히 좋겠다 싶은 주제만 true (판단 기준: 독립적으로 이해 가능하고 임팩트 있는 내용)
+- skip: 인사말·아웃트로·구독/좋아요 요청·의미 없는 잡담처럼 콘텐츠 가치가 없는 구간은 true, 실제 내용이 있는 구간은 false
+- recommended: skip=false인 주제 중 특히 임팩트 있어 쇼츠로 만들면 좋은 것만 true
 ⚠️ ranges의 start/end는 자막의 숫자(초)를 그대로 사용
 
 JSON 형식:
@@ -129,6 +128,7 @@ JSON 형식:
     {{
       "title": "주제 제목 (15자 이내)",
       "description": "한 줄 설명",
+      "skip": false,
       "recommended": true,
       "recommend_reason": "추천 이유 (recommended=true일 때만)",
       "ranges": [{{"start": 0.0, "end": 30.0}}]
@@ -156,6 +156,7 @@ JSON 형식:
         topics.append({
             "title": t["title"],
             "description": t.get("description", ""),
+            "skip": bool(t.get("skip", False)),
             "recommended": is_rec,
             "recommend_reason": t.get("recommend_reason", "") if is_rec else "",
             "ranges": _norm_ranges(t["ranges"]),
@@ -343,9 +344,9 @@ async def _analyze_video_chunked(
 작업 지시:
 - 이 구간 전체를 순서대로 훑으며 화제가 바뀌는 지점마다 새 주제로 구분
 - **모든 구간이 반드시 어딘가 topics에 포함되어야 함** (빠지는 구간 없을 것)
-- 주제의 좋고 나쁨을 판단하지 말 것 — 무조건 전부 나열
-- 짧은 잡담, 인사, 마무리도 별도 주제로 포함
-- recommended: 쇼츠로 만들면 특히 좋겠다 싶은 주제만 true
+- 한 주제 안에서 잠깐 다른 얘기 후 돌아오면 ranges에 두 구간 모두 나열
+- skip: 인사말·아웃트로·구독/좋아요 요청·의미 없는 잡담은 true, 실제 내용이 있는 구간은 false
+- recommended: skip=false인 주제 중 특히 임팩트 있어 쇼츠로 만들면 좋은 것만 true
 ⚠️ ranges의 start/end는 자막의 숫자(초)를 그대로 사용
 
 JSON 형식:
@@ -354,6 +355,7 @@ JSON 형식:
     {{
       "title": "주제 제목 (15자 이내)",
       "description": "한 줄 설명",
+      "skip": false,
       "recommended": true,
       "recommend_reason": "추천 이유 (recommended=true일 때만)",
       "ranges": [{{"start": 0.0, "end": 30.0}}]
@@ -398,6 +400,7 @@ JSON 형식:
         topics.append({
             "title": t["title"],
             "description": t.get("description", ""),
+            "skip": bool(t.get("skip", False)),
             "recommended": is_rec,
             "recommend_reason": t.get("recommend_reason", "") if is_rec else "",
             "ranges": _norm_ranges(t["ranges"]),

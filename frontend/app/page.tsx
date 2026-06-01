@@ -684,6 +684,11 @@ export default function Home() {
                                   추천
                                 </span>
                               )}
+                              {topic.skip && (
+                                <span className="shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 border border-slate-200">
+                                  자동생성 제외
+                                </span>
+                              )}
                             </div>
                             <DurationBadge sec={topic.duration_sec} />
                           </div>

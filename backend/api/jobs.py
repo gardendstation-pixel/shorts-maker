@@ -125,7 +125,9 @@ async def auto_generate(job_id: str, background_tasks: BackgroundTasks):
         return {"job_id": job_id, "already": True}
 
     suggestions = json.loads(job["suggestions"] or "[]")
-    to_generate = [t for t in suggestions if t.get("recommended")] or suggestions
+    to_generate = [t for t in suggestions if not t.get("skip", False)]
+    if not to_generate:
+        to_generate = suggestions
     if not to_generate:
         raise HTTPException(status_code=400, detail="생성할 주제가 없습니다.")
 
