@@ -23,11 +23,16 @@ async def init_db():
                 suggestions TEXT DEFAULT '[]',
                 segments TEXT DEFAULT '[]',
                 output_path TEXT DEFAULT '',
+                outputs TEXT DEFAULT '[]',
                 error TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        try:
+            await db.execute("ALTER TABLE jobs ADD COLUMN outputs TEXT DEFAULT '[]'")
+        except Exception:
+            pass
         await db.commit()
 
 

@@ -21,6 +21,14 @@ export interface SubTopic {
   duration_sec: number;
 }
 
+export interface ShortOutput {
+  index: number;
+  title: string;
+  path: string;
+  duration_sec: number;
+  youtube_url: string;
+}
+
 export interface JobStatus {
   job_id: string;
   status: "pending" | "processing" | "suggested" | "generating" | "done" | "error";
@@ -33,6 +41,7 @@ export interface JobStatus {
   suggestions?: TopicSuggestion[];
   segments?: Array<{ start: number; end: number }>;
   download_url?: string;
+  outputs?: ShortOutput[];
   error?: string;
 }
 
@@ -105,6 +114,53 @@ export function getDownloadUrl(jobId: string): string {
 
 export function getVideoUrl(jobId: string): string {
   return `${BASE_URL}/api/jobs/${jobId}/video`;
+}
+
+export async function generateAllShorts(jobId: string): Promise<{ total: number }> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${jobId}/generate-all`, {
+    method: "POST",
+    headers: DEFAULT_HEADERS,
+  });
+  if (!res.ok) throw new Error("전체 생성 요청 실패");
+  return res.json();
+}
+
+export function getShortDownloadUrl(jobId: string, index: number): string {
+  return `${BASE_URL}/api/jobs/${jobId}/download/${index}`;
+}
+
+export async function uploadToYouTube(
+  jobId: string,
+  index: number,
+  title: string,
+  description: string,
+  privacy: string,
+): Promise<{ youtube_url: string }> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${jobId}/upload-youtube/${index}`, {
+    method: "POST",
+    headers: DEFAULT_HEADERS,
+    body: JSON.stringify({ title, description, privacy }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "업로드 실패");
+  }
+  return res.json();
+}
+
+export async function getYouTubeAuthUrl(): Promise<{ url: string }> {
+  const res = await fetch(`${BASE_URL}/api/youtube/auth-url`, { headers: DEFAULT_HEADERS });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "YouTube 인증 URL 조회 실패");
+  }
+  return res.json();
+}
+
+export async function getYouTubeStatus(): Promise<{ configured: boolean; authorized: boolean }> {
+  const res = await fetch(`${BASE_URL}/api/youtube/status`, { headers: DEFAULT_HEADERS });
+  if (!res.ok) return { configured: false, authorized: false };
+  return res.json();
 }
 
 export function getPreviewClipUrl(jobId: string, ranges: Array<{ start: number; end: number }>): string {

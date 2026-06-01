@@ -37,6 +37,12 @@ class GenerateSegmentsRequest(BaseModel):
     ranges: list[dict]
 
 
+class UploadYouTubeRequest(BaseModel):
+    title: str = ""
+    description: str = ""
+    privacy: str = "private"
+
+
 @router.post("")
 async def create(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     if not req.url.strip():
@@ -107,6 +113,68 @@ async def generate_from_segments(job_id: str, req: GenerateSegmentsRequest, back
     return {"job_id": job_id}
 
 
+@router.post("/{job_id}/generate-all")
+async def generate_all(job_id: str, background_tasks: BackgroundTasks):
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    if job["status"] != "suggested":
+        raise HTTPException(status_code=400, detail="분석 완료된 작업만 가능합니다.")
+
+    suggestions = json.loads(job["suggestions"] or "[]")
+    to_generate = [t for t in suggestions if t.get("recommended")] or suggestions
+    if not to_generate:
+        raise HTTPException(status_code=400, detail="생성할 주제가 없습니다.")
+
+    await update_job(job_id, status="generating", progress=0,
+                     message=f"0/{len(to_generate)} 쇼츠 생성 준비 중...", outputs="[]")
+    background_tasks.add_task(generate_all_job, job_id, to_generate)
+    return {"job_id": job_id, "total": len(to_generate)}
+
+
+@router.get("/{job_id}/download/{index}")
+async def download_one(job_id: str, index: int):
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    outputs = json.loads(job.get("outputs") or "[]")
+    item = next((o for o in outputs if o["index"] == index), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="해당 쇼츠를 찾을 수 없습니다.")
+    out_path = Path(item["path"])
+    if not out_path.exists():
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    title = (item.get("title") or "shorts").replace(" ", "_")
+    return FileResponse(path=str(out_path), media_type="video/mp4", filename=f"{title}.mp4")
+
+
+@router.post("/{job_id}/upload-youtube/{index}")
+async def upload_to_youtube(job_id: str, index: int, req: UploadYouTubeRequest):
+    from services.youtube_uploader import is_authorized, upload_video
+    if not is_authorized():
+        raise HTTPException(status_code=401, detail="YouTube 계정이 연결되지 않았습니다.")
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    outputs = json.loads(job.get("outputs") or "[]")
+    item = next((o for o in outputs if o["index"] == index), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="해당 쇼츠를 찾을 수 없습니다.")
+    file_path = Path(item["path"])
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    try:
+        title = req.title or item.get("title", "Shorts")
+        youtube_url = await upload_video(file_path, title, req.description, req.privacy)
+        for o in outputs:
+            if o["index"] == index:
+                o["youtube_url"] = youtube_url
+        await update_job(job_id, outputs=json.dumps(outputs, ensure_ascii=False))
+        return {"youtube_url": youtube_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"업로드 실패: {str(e)[:300]}")
+
+
 @router.get("/{job_id}")
 async def get_status(job_id: str):
     job = await get_job(job_id)
@@ -130,6 +198,7 @@ async def get_status(job_id: str):
     if job["status"] == "done":
         result["download_url"] = f"/api/jobs/{job_id}/download"
 
+    result["outputs"] = json.loads(job.get("outputs") or "[]")
     return result
 
 
@@ -276,6 +345,65 @@ async def generate_job(job_id: str, chosen_topic: dict):
         await _safe_update(job_id, status="done", progress=100,
                            message="완료!", output_path=str(output_path))
 
+    except Exception as e:
+        await _safe_update(job_id, status="error", progress=100,
+                           message="오류 발생", error=_friendly(e))
+
+
+async def generate_all_job(job_id: str, topics: list[dict]):
+    try:
+        job = await get_job(job_id)
+        transcript_segs = json.loads(job["transcript"] or "[]")
+        video_path = Path(job.get("video_path") or "")
+        video_title = job.get("video_title") or ""
+
+        if not video_path.exists():
+            await _safe_update(job_id, status="error", progress=100,
+                               message="오류", error="원본 영상 파일이 없습니다.")
+            return
+
+        total = len(topics)
+        completed = []
+
+        for i, topic in enumerate(topics):
+            await _safe_update(
+                job_id,
+                progress=int(i / total * 90),
+                message=f"{i}/{total} 생성 중... ({topic['title']})",
+            )
+            try:
+                speech_segs, _ = await extract_segments_for_topic(
+                    transcript_segs, topic["title"], topic.get("ranges", []), video_title
+                )
+                if not speech_segs:
+                    continue
+                out_key = f"{job_id}_t{i}"
+                output_path = await cut_and_merge(video_path, speech_segs, out_key)
+                completed.append({
+                    "index": i,
+                    "title": topic["title"],
+                    "path": str(output_path),
+                    "duration_sec": topic.get("duration_sec", 0),
+                    "youtube_url": "",
+                })
+                await _safe_update(
+                    job_id,
+                    outputs=json.dumps(completed, ensure_ascii=False),
+                    progress=int((i + 1) / total * 90),
+                    message=f"{i + 1}/{total} 완료 ({topic['title']})",
+                )
+            except Exception:
+                pass
+
+        if completed:
+            await _safe_update(
+                job_id, status="done", progress=100,
+                message=f"완료! {len(completed)}개 쇼츠 생성됨",
+                outputs=json.dumps(completed, ensure_ascii=False),
+            )
+        else:
+            await _safe_update(job_id, status="error", progress=100,
+                               message="오류", error="쇼츠 생성에 모두 실패했습니다.")
     except Exception as e:
         await _safe_update(job_id, status="error", progress=100,
                            message="오류 발생", error=_friendly(e))

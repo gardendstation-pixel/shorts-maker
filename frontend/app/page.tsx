@@ -3,9 +3,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   createJob, generateShorts, generateCustomShorts, generateShortsFromSegments,
-  subdivideTopic, getPreviewClipUrl,
+  subdivideTopic, getPreviewClipUrl, generateAllShorts,
+  getShortDownloadUrl, uploadToYouTube, getYouTubeAuthUrl, getYouTubeStatus,
   getJobStatus, getDownloadUrl, formatSeconds,
-  type JobStatus, type TopicSuggestion, type SubTopic,
+  type JobStatus, type TopicSuggestion, type SubTopic, type ShortOutput,
 } from "@/lib/api";
 
 type Step = "input" | "analyzing" | "select_topic" | "generating" | "done" | "error";
@@ -48,6 +49,14 @@ export default function Home() {
   const [selectedSubs, setSelectedSubs] = useState<Set<number>>(new Set());
   const [isSubdividing, setIsSubdividing] = useState(false);
 
+  const [ytAuthorized, setYtAuthorized] = useState(false);
+  const [ytConfigured, setYtConfigured] = useState(false);
+  const [ytPopup, setYtPopup] = useState<Window | null>(null);
+  const [uploadModal, setUploadModal] = useState<{ index: number; title: string; description: string; privacy: string } | null>(null);
+  const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
+  const [uploadedUrls, setUploadedUrls] = useState<Record<number, string>>({});
+  const [uploadError, setUploadError] = useState("");
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const failRef = useRef(0);
 
@@ -57,6 +66,23 @@ export default function Home() {
   }, []);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  useEffect(() => {
+    getYouTubeStatus().then(s => { setYtConfigured(s.configured); setYtAuthorized(s.authorized); }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!ytPopup) return;
+    const iv = setInterval(async () => {
+      const s = await getYouTubeStatus().catch(() => ({ configured: false, authorized: false }));
+      if (s.authorized) {
+        setYtAuthorized(true);
+        setYtPopup(null);
+        clearInterval(iv);
+      }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [ytPopup]);
 
 
   const startPolling = useCallback((jobId: string, onTerminal: (s: JobStatus) => void) => {
@@ -192,16 +218,124 @@ export default function Home() {
     ? [...selectedSubs].reduce((acc, i) => acc + (subTopics[i]?.duration_sec ?? 0), 0)
     : 0;
 
+  const handleGenerateAll = async () => {
+    if (!job) return;
+    try {
+      await generateAllShorts(job.job_id);
+      setJob(await getJobStatus(job.job_id));
+      setStep("generating");
+      startPolling(job.job_id, s => {
+        if (s.status === "done") setStep("done");
+        else setStep("error");
+      });
+    } catch {
+      setStep("error");
+      setJob(p => p ? { ...p, error: "전체 생성 요청에 실패했습니다." } : null);
+    }
+  };
+
+  const handleConnectYouTube = async () => {
+    try {
+      const { url } = await getYouTubeAuthUrl();
+      const popup = window.open(url, "youtube_auth", "width=500,height=600");
+      setYtPopup(popup);
+    } catch (e: unknown) {
+      alert((e as Error).message || "YouTube 연결 실패");
+    }
+  };
+
+  const handleUploadYouTube = async () => {
+    if (!uploadModal || !job) return;
+    setUploadingIdx(uploadModal.index);
+    setUploadError("");
+    try {
+      const { youtube_url } = await uploadToYouTube(
+        job.job_id, uploadModal.index,
+        uploadModal.title, uploadModal.description, uploadModal.privacy,
+      );
+      setUploadedUrls(p => ({ ...p, [uploadModal.index]: youtube_url }));
+      setUploadModal(null);
+    } catch (e: unknown) {
+      setUploadError((e as Error).message || "업로드 실패");
+    } finally {
+      setUploadingIdx(null);
+    }
+  };
+
   const handleReset = () => {
     stopPolling();
     setStep("input"); setJob(null); setUrl("");
     setSelectedIndex(null); setCustomTopic(""); setSubmitError("");
     setSubdivideIndex(null); setSubTopics(null); setSelectedSubs(new Set());
-    setPreview(null);
+    setPreview(null); setUploadedUrls({}); setUploadModal(null); setUploadError("");
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 text-slate-900 flex flex-col">
+
+      {/* YouTube 업로드 모달 */}
+      {uploadModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(15,23,42,0.5)", backdropFilter: "blur(8px)" }}
+          onClick={() => { setUploadModal(null); setUploadError(""); }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden border border-slate-100"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <p className="text-sm font-semibold text-slate-800">YouTube 업로드</p>
+              <button
+                onClick={() => { setUploadModal(null); setUploadError(""); }}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all text-base"
+              >✕</button>
+            </div>
+            <div className="p-5 space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">제목</label>
+                <input
+                  type="text"
+                  value={uploadModal.title}
+                  onChange={e => setUploadModal(p => p ? { ...p, title: e.target.value } : null)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">설명 (선택)</label>
+                <textarea
+                  value={uploadModal.description}
+                  onChange={e => setUploadModal(p => p ? { ...p, description: e.target.value } : null)}
+                  rows={2}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all resize-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">공개 설정</label>
+                <select
+                  value={uploadModal.privacy}
+                  onChange={e => setUploadModal(p => p ? { ...p, privacy: e.target.value } : null)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                >
+                  <option value="private">비공개</option>
+                  <option value="unlisted">링크 공개</option>
+                  <option value="public">전체 공개</option>
+                </select>
+              </div>
+              {uploadError && (
+                <p className="text-xs text-red-500 bg-red-50 border border-red-100 rounded-xl px-3 py-2">{uploadError}</p>
+              )}
+              <button
+                onClick={handleUploadYouTube}
+                disabled={uploadingIdx !== null || !uploadModal.title.trim()}
+                className="w-full py-3 rounded-xl text-sm font-semibold text-white bg-red-500 hover:bg-red-600 disabled:bg-slate-200 disabled:text-slate-400 transition-all"
+              >
+                {uploadingIdx !== null ? "업로드 중..." : "YouTube에 업로드"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 영상 미리보기 모달 */}
       {preview && job && (
@@ -375,6 +509,19 @@ export default function Home() {
                   </div>
                 )}
               </div>
+
+              {/* 전체 자동 생성 버튼 */}
+              {job.suggestions && job.suggestions.length > 0 && (
+                <button
+                  onClick={handleGenerateAll}
+                  className="w-full py-3 rounded-xl text-sm font-semibold text-white transition-all bg-gradient-to-r from-violet-500 to-pink-500 hover:from-violet-600 hover:to-pink-600 shadow-md shadow-violet-200 hover:shadow-lg hover:shadow-violet-300 active:scale-[0.99]"
+                >
+                  ⚡ 추천 주제 전체 자동 생성
+                  <span className="ml-2 opacity-70 font-normal text-xs">
+                    {job.suggestions.filter(t => t.recommended).length || job.suggestions.length}개 쇼츠
+                  </span>
+                </button>
+              )}
 
               {/* 주제 목록 */}
               {(!job.suggestions || job.suggestions.length === 0) ? (
@@ -581,36 +728,125 @@ export default function Home() {
           {/* 완료 */}
           {step === "done" && job && (
             <div className="space-y-3">
-              <div className="bg-white rounded-2xl p-6 border border-emerald-100 shadow-sm space-y-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-200">
-                    <span className="text-white text-xs font-bold">✓</span>
-                  </div>
-                  <span className="text-emerald-600 font-bold text-sm">쇼츠 생성 완료</span>
-                </div>
-                {job.segments && job.segments.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs text-slate-400">{job.segments.length}개 클립 · 공백 제거됨</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {job.segments.map((seg, i) => (
-                        <span
-                          key={i}
-                          className="text-xs font-mono bg-slate-50 border border-slate-200 text-slate-500 px-2.5 py-1 rounded-lg tabular-nums"
-                        >
-                          {formatSeconds(seg.start)} → {formatSeconds(seg.end)}
+              {/* 멀티 쇼츠 완료 */}
+              {job.outputs && job.outputs.length > 0 ? (
+                <>
+                  <div className="bg-white rounded-2xl p-5 border border-emerald-100 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-200">
+                          <span className="text-white text-xs font-bold">✓</span>
+                        </div>
+                        <span className="text-emerald-600 font-bold text-sm">
+                          {job.outputs.length}개 쇼츠 생성 완료
                         </span>
-                      ))}
+                      </div>
+                      {/* YouTube 연결 상태 */}
+                      {ytConfigured && (
+                        ytAuthorized ? (
+                          <span className="text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full font-medium">
+                            ✓ YouTube 연결됨
+                          </span>
+                        ) : (
+                          <button
+                            onClick={handleConnectYouTube}
+                            className="text-xs text-white bg-red-500 hover:bg-red-600 px-2.5 py-1 rounded-full font-medium transition-all"
+                          >
+                            YouTube 연결
+                          </button>
+                        )
+                      )}
                     </div>
                   </div>
-                )}
-                <a
-                  href={getDownloadUrl(job.job_id)}
-                  download
-                  className={`flex items-center justify-center gap-2 no-underline ${primaryBtn}`}
-                >
-                  <span>⬇</span> MP4 다운로드
-                </a>
-              </div>
+
+                  {/* 쇼츠 목록 */}
+                  {job.outputs.map((output: ShortOutput) => {
+                    const ytUrl = uploadedUrls[output.index] || output.youtube_url;
+                    const isUploading = uploadingIdx === output.index;
+                    return (
+                      <div key={output.index} className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-semibold text-slate-800 truncate">{output.title}</span>
+                          <DurationBadge sec={output.duration_sec} />
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          <a
+                            href={getShortDownloadUrl(job.job_id, output.index)}
+                            download
+                            className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-slate-800 hover:border-slate-300 font-medium transition-all no-underline"
+                          >
+                            ⬇ 다운로드
+                          </a>
+                          {ytUrl ? (
+                            <a
+                              href={ytUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs px-3 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium transition-all no-underline"
+                            >
+                              ▶ YouTube 보기
+                            </a>
+                          ) : ytConfigured ? (
+                            ytAuthorized ? (
+                              <button
+                                onClick={() => setUploadModal({
+                                  index: output.index,
+                                  title: output.title,
+                                  description: "",
+                                  privacy: "private",
+                                })}
+                                disabled={isUploading}
+                                className="text-xs px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white font-medium transition-all"
+                              >
+                                {isUploading ? "업로드 중..." : "↑ YouTube 업로드"}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={handleConnectYouTube}
+                                className="text-xs px-3 py-1.5 rounded-lg border border-red-300 text-red-500 hover:bg-red-50 font-medium transition-all"
+                              >
+                                YouTube 연결 필요
+                              </button>
+                            )
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              ) : (
+                /* 싱글 쇼츠 완료 */
+                <div className="bg-white rounded-2xl p-6 border border-emerald-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center shadow-sm shadow-emerald-200">
+                      <span className="text-white text-xs font-bold">✓</span>
+                    </div>
+                    <span className="text-emerald-600 font-bold text-sm">쇼츠 생성 완료</span>
+                  </div>
+                  {job.segments && job.segments.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-slate-400">{job.segments.length}개 클립 · 공백 제거됨</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {job.segments.map((seg, i) => (
+                          <span
+                            key={i}
+                            className="text-xs font-mono bg-slate-50 border border-slate-200 text-slate-500 px-2.5 py-1 rounded-lg tabular-nums"
+                          >
+                            {formatSeconds(seg.start)} → {formatSeconds(seg.end)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <a
+                    href={getDownloadUrl(job.job_id)}
+                    download
+                    className={`flex items-center justify-center gap-2 no-underline ${primaryBtn}`}
+                  >
+                    <span>⬇</span> MP4 다운로드
+                  </a>
+                </div>
+              )}
               <button
                 onClick={handleReset}
                 className="w-full text-slate-400 hover:text-slate-600 text-sm py-2 transition-colors"

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from models.database import init_db
 from api.jobs import router as jobs_router
+from api.youtube import router as youtube_router
 
 
 def _init_youtube_cookies():
@@ -39,6 +40,7 @@ app.add_middleware(
 )
 
 app.include_router(jobs_router)
+app.include_router(youtube_router)
 
 
 @app.get("/health")
