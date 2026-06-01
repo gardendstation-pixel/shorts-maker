@@ -14,6 +14,26 @@ from services.editor import cut_and_merge, cut_preview_clip
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+_MAX_SHORT_SEC = 60.0
+
+
+def _split_segs_to_60s(segs: list[dict]) -> list[list[dict]]:
+    """speech segment 리스트를 60초 단위 청크로 분할."""
+    chunks: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_dur = 0.0
+    for s in segs:
+        dur = s["end"] - s["start"]
+        if cur_dur + dur > _MAX_SHORT_SEC and cur:
+            chunks.append(cur)
+            cur, cur_dur = [s], dur
+        else:
+            cur.append(s)
+            cur_dur += dur
+    if cur:
+        chunks.append(cur)
+    return chunks
+
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -425,14 +445,24 @@ async def auto_generate_job(job_id: str, topics: list[dict]):
                 )
                 if not speech_segs:
                     continue
-                output_path = await cut_and_merge(video_path, speech_segs, f"{job_id}_a{i}")
-                completed.append({
-                    "index": i,
-                    "title": topic["title"],
-                    "path": str(output_path),
-                    "duration_sec": topic.get("duration_sec", 0),
-                    "youtube_url": "",
-                })
+
+                total_dur = sum(s["end"] - s["start"] for s in speech_segs)
+                chunks = _split_segs_to_60s(speech_segs) if total_dur > _MAX_SHORT_SEC else [speech_segs]
+
+                for j, chunk in enumerate(chunks):
+                    chunk_dur = sum(s["end"] - s["start"] for s in chunk)
+                    chunk_title = (
+                        f"{topic['title']} {j + 1}/{len(chunks)}" if len(chunks) > 1 else topic["title"]
+                    )
+                    output_path = await cut_and_merge(video_path, chunk, f"{job_id}_a{i}_p{j}")
+                    completed.append({
+                        "index": len(completed),
+                        "title": chunk_title,
+                        "path": str(output_path),
+                        "duration_sec": round(chunk_dur),
+                        "youtube_url": "",
+                    })
+
                 await _safe_update(
                     job_id,
                     outputs=json.dumps(completed, ensure_ascii=False),
