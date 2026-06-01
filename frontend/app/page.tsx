@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   createJob, generateShorts, generateCustomShorts, generateShortsFromSegments,
-  subdivideTopic, getPreviewClipUrl, generateAllShorts,
-  getShortDownloadUrl, uploadToYouTube, getYouTubeAuthUrl, getYouTubeStatus,
+  subdivideTopic, getPreviewClipUrl, startAutoGenerate,
+  getShortDownloadUrl, getShortWatchUrl, uploadToYouTube, getYouTubeAuthUrl, getYouTubeStatus,
   getJobStatus, getDownloadUrl, formatSeconds,
   type JobStatus, type TopicSuggestion, type SubTopic, type ShortOutput,
 } from "@/lib/api";
@@ -48,6 +48,10 @@ export default function Home() {
   const [subTopics, setSubTopics] = useState<SubTopic[] | null>(null);
   const [selectedSubs, setSelectedSubs] = useState<Set<number>>(new Set());
   const [isSubdividing, setIsSubdividing] = useState(false);
+
+  const [autoWatchModal, setAutoWatchModal] = useState<{ index: number; title: string } | null>(null);
+  const autoWatchRef = useRef<HTMLVideoElement | null>(null);
+  const autoPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [ytAuthorized, setYtAuthorized] = useState(false);
   const [ytConfigured, setYtConfigured] = useState(false);
@@ -115,8 +119,11 @@ export default function Home() {
       setJob(await getJobStatus(job_id));
       setStep("analyzing");
       startPolling(job_id, s => {
-        if (s.status === "suggested") setStep("select_topic");
-        else if (s.status === "error") setStep("error");
+        if (s.status === "suggested") {
+          setStep("select_topic");
+          startAutoGenerate(job_id).catch(() => {});
+          startAutoPolling(job_id);
+        } else if (s.status === "error") setStep("error");
       });
     } catch {
       setSubmitError("서버에 연결할 수 없습니다. 백엔드가 실행 중인지 확인하세요 (port 8000).");
@@ -218,10 +225,28 @@ export default function Home() {
     ? [...selectedSubs].reduce((acc, i) => acc + (subTopics[i]?.duration_sec ?? 0), 0)
     : 0;
 
+  const startAutoPolling = useCallback((jobId: string) => {
+    if (autoPollingRef.current) clearInterval(autoPollingRef.current);
+    autoPollingRef.current = setInterval(async () => {
+      try {
+        const s = await getJobStatus(jobId);
+        setJob(s);
+        if (s.auto_status === "done" || s.auto_status === "error") {
+          clearInterval(autoPollingRef.current!);
+          autoPollingRef.current = null;
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }, []);
+
+  useEffect(() => () => {
+    if (autoPollingRef.current) clearInterval(autoPollingRef.current);
+  }, []);
+
   const handleGenerateAll = async () => {
     if (!job) return;
     try {
-      await generateAllShorts(job.job_id);
+      await startAutoGenerate(job.job_id);
       setJob(await getJobStatus(job.job_id));
       setStep("generating");
       startPolling(job.job_id, s => {
@@ -268,10 +293,51 @@ export default function Home() {
     setSelectedIndex(null); setCustomTopic(""); setSubmitError("");
     setSubdivideIndex(null); setSubTopics(null); setSelectedSubs(new Set());
     setPreview(null); setUploadedUrls({}); setUploadModal(null); setUploadError("");
+    setAutoWatchModal(null);
+    if (autoPollingRef.current) { clearInterval(autoPollingRef.current); autoPollingRef.current = null; }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 text-slate-900 flex flex-col">
+
+      {/* 자동생성 쇼츠 영상 보기 모달 */}
+      {autoWatchModal && job && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(15,23,42,0.5)", backdropFilter: "blur(8px)" }}
+          onClick={() => { setAutoWatchModal(null); autoWatchRef.current?.pause(); }}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden border border-slate-100"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <p className="text-sm font-semibold text-slate-800 truncate pr-4">{autoWatchModal.title}</p>
+              <button
+                onClick={() => { setAutoWatchModal(null); autoWatchRef.current?.pause(); }}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all shrink-0 text-base"
+              >✕</button>
+            </div>
+            <video
+              ref={autoWatchRef}
+              src={getShortWatchUrl(job.job_id, autoWatchModal.index)}
+              controls
+              playsInline
+              className="w-full bg-slate-900"
+              onLoadedMetadata={() => autoWatchRef.current?.play().catch(() => {})}
+            />
+            <div className="px-5 py-3 bg-slate-50 flex justify-end">
+              <a
+                href={getShortDownloadUrl(job.job_id, autoWatchModal.index)}
+                download
+                className="text-xs px-4 py-2 rounded-lg bg-violet-500 hover:bg-violet-600 text-white font-medium transition-all no-underline"
+              >
+                ⬇ 다운로드
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* YouTube 업로드 모달 */}
       {uploadModal && (
@@ -510,17 +576,68 @@ export default function Home() {
                 )}
               </div>
 
-              {/* 전체 자동 생성 버튼 */}
-              {job.suggestions && job.suggestions.length > 0 && (
-                <button
-                  onClick={handleGenerateAll}
-                  className="w-full py-3 rounded-xl text-sm font-semibold text-white transition-all bg-gradient-to-r from-violet-500 to-pink-500 hover:from-violet-600 hover:to-pink-600 shadow-md shadow-violet-200 hover:shadow-lg hover:shadow-violet-300 active:scale-[0.99]"
-                >
-                  ⚡ 추천 주제 전체 자동 생성
-                  <span className="ml-2 opacity-70 font-normal text-xs">
-                    {job.suggestions.filter(t => t.recommended).length || job.suggestions.length}개 쇼츠
-                  </span>
-                </button>
+              {/* 자동 생성 쇼츠 영역 */}
+              {(job.auto_status || (job.outputs && job.outputs.length > 0)) && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between px-1">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">자동 생성 쇼츠</p>
+                    {job.auto_status === "running" && (
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />
+                        <span className="text-xs text-violet-500">생성 중... {job.auto_progress ?? 0}%</span>
+                      </div>
+                    )}
+                    {job.auto_status === "done" && (
+                      <span className="text-xs text-emerald-500">{job.outputs?.length}개 완료</span>
+                    )}
+                  </div>
+
+                  {/* 생성 중 프로그레스 바 */}
+                  {job.auto_status === "running" && (
+                    <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{
+                          width: `${Math.max(4, job.auto_progress ?? 0)}%`,
+                          background: "linear-gradient(90deg, #8b5cf6, #ec4899)",
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* 완료된 쇼츠 카드들 */}
+                  {job.outputs && job.outputs.map((output: ShortOutput) => (
+                    <div key={output.index} className="bg-white rounded-2xl p-4 border border-violet-100 shadow-sm space-y-2.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-semibold text-slate-800 truncate">{output.title}</span>
+                        <DurationBadge sec={output.duration_sec} />
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setAutoWatchModal({ index: output.index, title: output.title })}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-slate-800 hover:border-slate-300 font-medium transition-all"
+                        >
+                          ▶ 영상 보기
+                        </button>
+                        <a
+                          href={getShortDownloadUrl(job.job_id, output.index)}
+                          download
+                          className="text-xs px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100 font-medium transition-all no-underline"
+                        >
+                          ⬇ 다운로드
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* 아직 생성 중이고 결과 없을 때 플레이스홀더 */}
+                  {job.auto_status === "running" && (!job.outputs || job.outputs.length === 0) && (
+                    <div className="bg-white rounded-2xl p-4 border border-violet-100 shadow-sm flex items-center gap-3">
+                      <div className="w-4 h-4 border-2 border-violet-200 border-t-violet-500 rounded-full animate-spin shrink-0" />
+                      <p className="text-xs text-slate-500">첫 번째 쇼츠 생성 중...</p>
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* 주제 목록 */}

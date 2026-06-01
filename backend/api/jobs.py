@@ -113,6 +113,27 @@ async def generate_from_segments(job_id: str, req: GenerateSegmentsRequest, back
     return {"job_id": job_id}
 
 
+@router.post("/{job_id}/auto-generate")
+async def auto_generate(job_id: str, background_tasks: BackgroundTasks):
+    """메인 status를 바꾸지 않고 백그라운드에서 자동 생성."""
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    if job["status"] != "suggested":
+        raise HTTPException(status_code=400, detail="분석 완료된 작업만 가능합니다.")
+    if job.get("auto_status") in ("running", "done"):
+        return {"job_id": job_id, "already": True}
+
+    suggestions = json.loads(job["suggestions"] or "[]")
+    to_generate = [t for t in suggestions if t.get("recommended")] or suggestions
+    if not to_generate:
+        raise HTTPException(status_code=400, detail="생성할 주제가 없습니다.")
+
+    await update_job(job_id, auto_status="running", auto_progress=0, outputs="[]")
+    background_tasks.add_task(auto_generate_job, job_id, to_generate)
+    return {"job_id": job_id, "total": len(to_generate)}
+
+
 @router.post("/{job_id}/generate-all")
 async def generate_all(job_id: str, background_tasks: BackgroundTasks):
     job = await get_job(job_id)
@@ -130,6 +151,22 @@ async def generate_all(job_id: str, background_tasks: BackgroundTasks):
                      message=f"0/{len(to_generate)} 쇼츠 생성 준비 중...", outputs="[]")
     background_tasks.add_task(generate_all_job, job_id, to_generate)
     return {"job_id": job_id, "total": len(to_generate)}
+
+
+@router.get("/{job_id}/watch/{index}")
+async def watch_one(job_id: str, index: int):
+    """생성된 쇼츠를 인라인으로 스트리밍 (브라우저 재생용)."""
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+    outputs = json.loads(job.get("outputs") or "[]")
+    item = next((o for o in outputs if o["index"] == index), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="해당 쇼츠를 찾을 수 없습니다.")
+    out_path = Path(item["path"])
+    if not out_path.exists():
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    return FileResponse(path=str(out_path), media_type="video/mp4")
 
 
 @router.get("/{job_id}/download/{index}")
@@ -199,6 +236,8 @@ async def get_status(job_id: str):
         result["download_url"] = f"/api/jobs/{job_id}/download"
 
     result["outputs"] = json.loads(job.get("outputs") or "[]")
+    result["auto_status"] = job.get("auto_status") or ""
+    result["auto_progress"] = job.get("auto_progress") or 0
     return result
 
 
@@ -348,6 +387,55 @@ async def generate_job(job_id: str, chosen_topic: dict):
     except Exception as e:
         await _safe_update(job_id, status="error", progress=100,
                            message="오류 발생", error=_friendly(e))
+
+
+async def auto_generate_job(job_id: str, topics: list[dict]):
+    """메인 status 변경 없이 outputs만 업데이트."""
+    try:
+        job = await get_job(job_id)
+        transcript_segs = json.loads(job["transcript"] or "[]")
+        video_path = Path(job.get("video_path") or "")
+        video_title = job.get("video_title") or ""
+
+        if not video_path.exists():
+            await _safe_update(job_id, auto_status="error")
+            return
+
+        total = len(topics)
+        completed = []
+
+        for i, topic in enumerate(topics):
+            await _safe_update(job_id, auto_progress=int(i / total * 90))
+            try:
+                speech_segs, _ = await extract_segments_for_topic(
+                    transcript_segs, topic["title"], topic.get("ranges", []), video_title
+                )
+                if not speech_segs:
+                    continue
+                output_path = await cut_and_merge(video_path, speech_segs, f"{job_id}_a{i}")
+                completed.append({
+                    "index": i,
+                    "title": topic["title"],
+                    "path": str(output_path),
+                    "duration_sec": topic.get("duration_sec", 0),
+                    "youtube_url": "",
+                })
+                await _safe_update(
+                    job_id,
+                    outputs=json.dumps(completed, ensure_ascii=False),
+                    auto_progress=int((i + 1) / total * 90),
+                )
+            except Exception:
+                pass
+
+        await _safe_update(
+            job_id,
+            auto_status="done" if completed else "error",
+            auto_progress=100,
+            outputs=json.dumps(completed, ensure_ascii=False),
+        )
+    except Exception as e:
+        await _safe_update(job_id, auto_status="error")
 
 
 async def generate_all_job(job_id: str, topics: list[dict]):

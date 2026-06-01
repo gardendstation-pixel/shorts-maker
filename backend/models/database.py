@@ -29,10 +29,15 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        try:
-            await db.execute("ALTER TABLE jobs ADD COLUMN outputs TEXT DEFAULT '[]'")
-        except Exception:
-            pass
+        for col, default in [
+            ("outputs", "'[]'"),
+            ("auto_status", "''"),
+            ("auto_progress", "0"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT DEFAULT {default}")
+            except Exception:
+                pass
         await db.commit()
 
 

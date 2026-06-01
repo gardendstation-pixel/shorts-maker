@@ -42,6 +42,8 @@ export interface JobStatus {
   segments?: Array<{ start: number; end: number }>;
   download_url?: string;
   outputs?: ShortOutput[];
+  auto_status?: string;
+  auto_progress?: number;
   error?: string;
 }
 
@@ -116,6 +118,13 @@ export function getVideoUrl(jobId: string): string {
   return `${BASE_URL}/api/jobs/${jobId}/video`;
 }
 
+export async function startAutoGenerate(jobId: string): Promise<void> {
+  await fetch(`${BASE_URL}/api/jobs/${jobId}/auto-generate`, {
+    method: "POST",
+    headers: DEFAULT_HEADERS,
+  });
+}
+
 export async function generateAllShorts(jobId: string): Promise<{ total: number }> {
   const res = await fetch(`${BASE_URL}/api/jobs/${jobId}/generate-all`, {
     method: "POST",
@@ -127,6 +136,10 @@ export async function generateAllShorts(jobId: string): Promise<{ total: number 
 
 export function getShortDownloadUrl(jobId: string, index: number): string {
   return `${BASE_URL}/api/jobs/${jobId}/download/${index}`;
+}
+
+export function getShortWatchUrl(jobId: string, index: number): string {
+  return `${BASE_URL}/api/jobs/${jobId}/watch/${index}`;
 }
 
 export async function uploadToYouTube(
