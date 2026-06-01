@@ -52,6 +52,7 @@ export default function Home() {
   const [autoWatchModal, setAutoWatchModal] = useState<{ index: number; title: string } | null>(null);
   const autoWatchRef = useRef<HTMLVideoElement | null>(null);
   const autoPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoTriggeredRef = useRef(false);
 
   const [ytAuthorized, setYtAuthorized] = useState(false);
   const [ytConfigured, setYtConfigured] = useState(false);
@@ -121,8 +122,11 @@ export default function Home() {
       startPolling(job_id, s => {
         if (s.status === "suggested") {
           setStep("select_topic");
-          startAutoGenerate(job_id).catch(() => {});
-          startAutoPolling(job_id);
+          if (!autoTriggeredRef.current) {
+            autoTriggeredRef.current = true;
+            startAutoGenerate(job_id).catch(() => {});
+            startAutoPolling(job_id);
+          }
         } else if (s.status === "error") setStep("error");
       });
     } catch {
@@ -294,6 +298,7 @@ export default function Home() {
     setSubdivideIndex(null); setSubTopics(null); setSelectedSubs(new Set());
     setPreview(null); setUploadedUrls({}); setUploadModal(null); setUploadError("");
     setAutoWatchModal(null);
+    autoTriggeredRef.current = false;
     if (autoPollingRef.current) { clearInterval(autoPollingRef.current); autoPollingRef.current = null; }
   };
 

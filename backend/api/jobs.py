@@ -116,22 +116,33 @@ async def generate_from_segments(job_id: str, req: GenerateSegmentsRequest, back
 @router.post("/{job_id}/auto-generate")
 async def auto_generate(job_id: str, background_tasks: BackgroundTasks):
     """메인 status를 바꾸지 않고 백그라운드에서 자동 생성."""
-    job = await get_job(job_id)
-    if not job:
+    from models.database import DB_PATH
+    import aiosqlite as _aio
+
+    if not await get_job(job_id):
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
+
+    # 원자적 업데이트: running 상태가 아닐 때만 시작
+    async with _aio.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE jobs SET auto_status='running', auto_progress=0, outputs='[]', updated_at=CURRENT_TIMESTAMP "
+            "WHERE id=? AND (auto_status IS NULL OR auto_status='' OR auto_status='error')",
+            (job_id,),
+        )
+        await db.commit()
+        if cur.rowcount == 0:
+            return {"job_id": job_id, "already": True}
+
+    job = await get_job(job_id)
     if job["status"] != "suggested":
+        await update_job(job_id, auto_status="")
         raise HTTPException(status_code=400, detail="분석 완료된 작업만 가능합니다.")
-    if job.get("auto_status") in ("running", "done"):
-        return {"job_id": job_id, "already": True}
 
     suggestions = json.loads(job["suggestions"] or "[]")
-    to_generate = [t for t in suggestions if not t.get("skip", False)]
-    if not to_generate:
-        to_generate = suggestions
+    to_generate = [t for t in suggestions if not t.get("skip", False)] or suggestions
     if not to_generate:
         raise HTTPException(status_code=400, detail="생성할 주제가 없습니다.")
 
-    await update_job(job_id, auto_status="running", auto_progress=0, outputs="[]")
     background_tasks.add_task(auto_generate_job, job_id, to_generate)
     return {"job_id": job_id, "total": len(to_generate)}
 
@@ -427,8 +438,9 @@ async def auto_generate_job(job_id: str, topics: list[dict]):
                     outputs=json.dumps(completed, ensure_ascii=False),
                     auto_progress=int((i + 1) / total * 90),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                import traceback
+                print(f"[auto-gen] topic {i} ({topic['title']}) 실패: {e}\n{traceback.format_exc()[-500:]}")
 
         await _safe_update(
             job_id,
@@ -436,7 +448,10 @@ async def auto_generate_job(job_id: str, topics: list[dict]):
             auto_progress=100,
             outputs=json.dumps(completed, ensure_ascii=False),
         )
+        print(f"[auto-gen] 완료: {len(completed)}/{len(topics)} 성공")
     except Exception as e:
+        import traceback
+        print(f"[auto-gen] 전체 오류: {e}\n{traceback.format_exc()[-500:]}")
         await _safe_update(job_id, auto_status="error")
 
 
