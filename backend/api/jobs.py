@@ -14,25 +14,68 @@ from services.editor import cut_and_merge, cut_preview_clip
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+_MIN_SHORT_SEC = 40.0
 _MAX_SHORT_SEC = 60.0
 
 
-def _split_segs_to_60s(segs: list[dict]) -> list[list[dict]]:
-    """speech segment 리스트를 60초 단위 청크로 분할."""
+def _segs_dur(segs: list[dict]) -> float:
+    return sum(s["end"] - s["start"] for s in segs)
+
+
+def _trim_segs(segs: list[dict], max_sec: float) -> list[dict]:
+    """앞에서부터 max_sec초 분량만 남김."""
+    result, total = [], 0.0
+    for s in segs:
+        dur = s["end"] - s["start"]
+        if total + dur > max_sec:
+            remaining = max_sec - total
+            if remaining >= 2.0:
+                result.append({"start": s["start"], "end": round(s["start"] + remaining, 2)})
+            break
+        result.append(s)
+        total += dur
+    return result
+
+
+def _split_into_n(segs: list[dict], n: int) -> list[list[dict]]:
+    """speech segment를 n개 청크로 균등 분할."""
+    import math
+    target = _segs_dur(segs) / n
     chunks: list[list[dict]] = []
     cur: list[dict] = []
     cur_dur = 0.0
     for s in segs:
         dur = s["end"] - s["start"]
-        if cur_dur + dur > _MAX_SHORT_SEC and cur:
+        if cur_dur >= target and len(chunks) < n - 1:
             chunks.append(cur)
-            cur, cur_dur = [s], dur
-        else:
-            cur.append(s)
-            cur_dur += dur
+            cur, cur_dur = [], 0.0
+        cur.append(s)
+        cur_dur += dur
     if cur:
         chunks.append(cur)
     return chunks
+
+
+def _determine_chunks(segs: list[dict]) -> list[list[dict]]:
+    """40~60초 쇼츠 청크 목록 반환. 40초 미만이면 빈 리스트."""
+    import math
+    total = _segs_dur(segs)
+
+    if total < _MIN_SHORT_SEC:
+        return []  # 너무 짧음 - 생성 안 함
+
+    if total <= _MAX_SHORT_SEC:
+        return [segs]  # 딱 맞음
+
+    # 60초 초과: 분할 필요
+    n = math.ceil(total / _MAX_SHORT_SEC)
+    avg = total / n
+
+    if avg < _MIN_SHORT_SEC:
+        # 분할하면 40초 미만 → 분할하지 않고 60초로 트림
+        return [_trim_segs(segs, _MAX_SHORT_SEC)]
+
+    return _split_into_n(segs, n)
 
 
 class AnalyzeRequest(BaseModel):
@@ -446,11 +489,12 @@ async def auto_generate_job(job_id: str, topics: list[dict]):
                 if not speech_segs:
                     continue
 
-                total_dur = sum(s["end"] - s["start"] for s in speech_segs)
-                chunks = _split_segs_to_60s(speech_segs) if total_dur > _MAX_SHORT_SEC else [speech_segs]
+                chunks = _determine_chunks(speech_segs)
+                if not chunks:
+                    continue  # 40초 미만 - 스킵
 
                 for j, chunk in enumerate(chunks):
-                    chunk_dur = sum(s["end"] - s["start"] for s in chunk)
+                    chunk_dur = _segs_dur(chunk)
                     chunk_title = (
                         f"{topic['title']} {j + 1}/{len(chunks)}" if len(chunks) > 1 else topic["title"]
                     )
